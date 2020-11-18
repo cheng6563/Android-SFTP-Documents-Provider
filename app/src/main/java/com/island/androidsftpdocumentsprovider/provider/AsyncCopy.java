@@ -42,8 +42,10 @@ public class AsyncCopy extends AsyncTask<File,Long,Void>implements Observer
 				for(File file:files)
 				{
 					File cache=new File(cacheDir,SFTP.getFile(uri).getName());
+					Log.d(SFTPProvider.TAG, String.format("AsyncCopy doInBackground Transfer %s to %s", cache.getAbsolutePath(), file.getAbsolutePath()));
 					processing=file;
 					sftp.writeAll(new FileInputStream(cache),sftp.write(file),this);
+
 				}
 			}
 		}
@@ -69,15 +71,20 @@ public class AsyncCopy extends AsyncTask<File,Long,Void>implements Observer
 	@Override
 	protected void onPostExecute(Void result)
 	{
-		Log.i(SFTPProvider.TAG,String.format("AsyncCopy onPostExecute %s",result));
+		Log.i(SFTPProvider.TAG,String.format("AsyncCopy onPostExecute %s %s",uri.toString(), result));
 		Context context=getContext();
+		NotificationManager notificationManager=(NotificationManager)context.getSystemService(Context.NOTIFICATION_SERVICE);
+		notificationManager.cancelAll();
 		Intent intent=new Intent(context,UploaderService.class);
 		context.stopService(intent);
+		Intent intentBroadcast = new Intent(SFTPProvider.SFTP_UPLOAD_POST);
+		intentBroadcast.putExtra("uri", uri.toString());
+		context.sendBroadcast(intentBroadcast);
 	}
 	@Override
 	protected void onProgressUpdate(Long[]values)
 	{
-		Log.i(SFTPProvider.TAG,String.format("AsyncCopy onProgressUpdate %s",Arrays.toString(values)));
+		Log.i(SFTPProvider.TAG,String.format("AsyncCopy onProgressUpdate %s %s",uri.toString(),Arrays.toString(values)));
 		Objects.requireNonNull(values);
 		if(values.length==0)throw new IllegalArgumentException("values length is 0");
 		Context context=getContext();
@@ -85,6 +92,7 @@ public class AsyncCopy extends AsyncTask<File,Long,Void>implements Observer
 		NotificationManager notificationManager=(NotificationManager)context.getSystemService(Context.NOTIFICATION_SERVICE);
 		Notification notification=UploaderService.getNotification(context,processing.getName(),progress);
 		notificationManager.notify(UploaderService.ONGOING_NOTIFICATION_ID,notification);
+
 	}
 	private Context getContext()
 	{

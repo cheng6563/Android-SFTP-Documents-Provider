@@ -1,15 +1,13 @@
 package com.island.androidsftpdocumentsprovider.provider;
 import android.accounts.*;
 import android.content.*;
-import android.content.res.*;
 import android.database.*;
-import android.graphics.*;
 import android.net.*;
 import android.os.*;
 import android.provider.*;
 import android.provider.DocumentsContract.*;
 import android.util.*;
-import android.webkit.*;
+
 import com.island.androidsftpdocumentsprovider.*;
 import com.island.androidsftpdocumentsprovider.account.*;
 import com.island.sftp.*;
@@ -18,17 +16,31 @@ import java.util.*;
 
 import android.accounts.OperationCanceledException;
 import java.net.*;
+import java.util.concurrent.CopyOnWriteArraySet;
+
 public class SFTPProvider extends DocumentsProvider
 {
 	public static final String TAG="SFTPDocumentsProvider";
-	private static final String[]DEFAULT_ROOT_PROJECTION=
+    private static final String[]DEFAULT_ROOT_PROJECTION=
 	{Root.COLUMN_ROOT_ID,Root.COLUMN_FLAGS,Root.COLUMN_ICON,Root.COLUMN_TITLE,Root.COLUMN_DOCUMENT_ID,Root.COLUMN_SUMMARY};
 	private static final String[]DEFAULT_DOCUMENT_PROJECTION=
 	{Document.COLUMN_DOCUMENT_ID,Document.COLUMN_SIZE,Document.COLUMN_DISPLAY_NAME,Document.COLUMN_LAST_MODIFIED,Document.COLUMN_MIME_TYPE,Document.COLUMN_FLAGS};
-	private final List<SFTP>connections=new ArrayList<>();
+    public static final String SFTP_UPLOAD_POST = "com.island.androidsftpdocumentsprovider.provider.SFTPProvider.uploadPost";
+    private final List<SFTP>connections=new ArrayList<>();
+
+
+    private final static Set<String> uploadingFiles = new CopyOnWriteArraySet<>();
 	@Override
 	public boolean onCreate()
 	{
+	    getContext().registerReceiver(new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+				String uri = intent.getStringExtra("uri");
+                Log.i(TAG, String.format("Current uploading files: %s, remove %s", uploadingFiles, uri));
+                uploadingFiles.remove(uri);
+            }
+        }, new IntentFilter(SFTP_UPLOAD_POST));
 		return true;
 	}
 	@Override
@@ -49,13 +61,15 @@ public class SFTPProvider extends DocumentsProvider
 				row.add(Root.COLUMN_DOCUMENT_ID,documentId);
 				int icon=R.drawable.ic_launcher;
 				row.add(Root.COLUMN_ICON,icon);
-				int flags=Root.FLAG_SUPPORTS_CREATE;
+				int flags = Root.FLAG_SUPPORTS_CREATE;
+				if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+					flags = flags | Root.FLAG_SUPPORTS_IS_CHILD;
+				}
 				row.add(Root.COLUMN_FLAGS,flags);
 				String title=getContext().getString(R.string.sftp);
 				row.add(Root.COLUMN_TITLE,title);
 				row.add(Root.COLUMN_SUMMARY,uri.getAuthority());
 			}
-			
 			return result;
 		}
 		catch(Exception e)
@@ -63,7 +77,15 @@ public class SFTPProvider extends DocumentsProvider
 			throw exception(e,"QueryRoots");
 		}
 	}
-	
+
+	@Override
+	public boolean isChildDocument(String parentDocumentId, String documentId) {
+		Log.d(TAG, String.format("isChildDocument: parentDocumentId=%s, documentId=%s", parentDocumentId, documentId));
+		final String parentUri = parentDocumentId;
+		final String childUri = documentId;
+		return childUri.startsWith(parentUri);
+	}
+
 	@Override
 	public Cursor queryDocument(String uri,String[]projection)throws FileNotFoundException
 	{
@@ -123,10 +145,27 @@ public class SFTPProvider extends DocumentsProvider
 			boolean isWrite=(mode.indexOf('w')!=-1);
 			final Uri documentId=Uri.parse(uri);
 			SFTP sftp=getSFTP(documentId);
-			File cache=new File(getContext().getCacheDir(),SFTP.getFile(documentId).getName());
+			File serverFile = SFTP.getFile(documentId);
+			File cache=new File(getContext().getCacheDir(), serverFile.getName());
 			try
 			{
-				sftp.get(SFTP.getFile(documentId),cache);
+			    boolean isDownloadFile = true;
+                long serverLastModified = sftp.lastModified(serverFile);
+                if(cache.exists()){
+                    if( uploadingFiles.contains(documentId.toString())){
+                        Log.i(TAG, String.format("File %s uploading, open cache file.", documentId.toString()));
+                        isDownloadFile = false;
+                    }
+                    if(cache.lastModified() == serverLastModified){
+                        Log.i(TAG, String.format("File %s is not modify, open cache file.", documentId.toString()));
+                        isDownloadFile = false;
+                    }
+                }
+
+                if (isDownloadFile) {
+                    sftp.get(serverFile, cache);
+                }
+				final File cacheDir = getContext().getCacheDir();
 				if(isWrite)
 				{
 					Looper looper=getContext().getMainLooper();
@@ -135,11 +174,11 @@ public class SFTPProvider extends DocumentsProvider
 							@Override
 							public void onClose(IOException exception)
 							{
+								File cacheFile = new File(cacheDir, SFTP.getFile(documentId).getName());
+								Log.d(TAG, "File close: " + cacheFile + ", file size: " + cacheFile.length());
 								if(exception==null)
 								{
-									Intent intent=new Intent(getContext(),UploaderService.class);
-									intent.setData(documentId);
-									getContext().startService(intent);
+                                    asyncUpload(cacheFile, documentId);
 								}
 								else
 								{
@@ -165,6 +204,16 @@ public class SFTPProvider extends DocumentsProvider
 			throw exception(e,"openDocument",uri);
 		}
 	}
+
+
+
+	private void asyncUpload(File cacheFile, Uri documentId) {
+	    uploadingFiles.add(documentId.toString());
+		Intent intent=new Intent(getContext(), UploaderService.class);
+		intent.setData(documentId);
+		getContext().startService(intent);
+	}
+
 	@Override
     public String createDocument(String parentUri,String mimeType,String displayName)throws FileNotFoundException
 	{
@@ -371,11 +420,16 @@ public class SFTPProvider extends DocumentsProvider
 		}
 		if(sftp==null)
 		{
-			sftp=new SFTP(documentId,getToken(getContext(),documentId));
+			sftp= createSftp(documentId);
 			connections.add(sftp);
 		}
 		return sftp;
 	}
+
+	private SFTP createSftp(Uri documentId) throws IOException {
+		return new MtSFTP(documentId,getToken(getContext(),documentId));
+	}
+
 	private void putFileInfo(MatrixCursor.RowBuilder row,Uri uri)throws IOException
 	{
 		assert row!=null;
@@ -446,6 +500,10 @@ public class SFTPProvider extends DocumentsProvider
 	{
 		assert sftp!=null;
 		connections.remove(sftp);
-		sftp.close();
+		try {
+			sftp.close();
+		} catch (IOException e) {
+			Log.e(TAG, "sftp close exception", e);
+		}
 	}
 }

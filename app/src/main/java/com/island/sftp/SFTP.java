@@ -14,16 +14,23 @@ public class SFTP implements Closeable
 	private static final int TIMEOUT=20000;
 	private static final int BUFFER=1024;
 	public static final String SCHEME="sftp://";
-	public final Uri uri;
-	private final String password;
-	private final Session session;
-	private final ChannelSftp channel;
+	public  Uri uri;
+	private  String password;
+	private  Session session;
+	private  ChannelSftp channel;
 	private final HashMap<File,Long>lastModified=new HashMap<>();
 	private final HashMap<File,Long>size=new HashMap<>();
 	private final HashMap<File,Boolean>directory=new HashMap<>();
 	private boolean disconnected;
 	public SFTP(Uri uri,String password)throws ConnectException
 	{
+		init(uri, password);
+	}
+
+	public SFTP() {
+	}
+
+	protected void init(Uri uri, String password) throws ConnectException {
 		Log.d(SFTPProvider.TAG,String.format("Created new connection for %s",uri.getAuthority()));
 		checkArguments(uri,password);
 		this.uri=uri;
@@ -35,7 +42,7 @@ public class SFTP implements Closeable
 		{
 			session=jsch.getSession(uri.getUserInfo(),uri.getHost(),uri.getPort());
 			session.setPassword(password);
-			java.util.Properties config=new java.util.Properties();
+			Properties config=new Properties();
 			config.put("StrictHostKeyChecking","no");
 			session.setConfig(config);
 			session.setTimeout(TIMEOUT);
@@ -51,6 +58,7 @@ public class SFTP implements Closeable
 			throw exception;
 		}
 	}
+
 	private<T>T getValue(Map<File,T>map,File file)throws IOException
 	{
 		checkArguments(map,file);
@@ -78,7 +86,7 @@ public class SFTP implements Closeable
 		return getValue(directory,file);
 	}
 	@Override
-	public void close()
+	public void close() throws IOException
 	{
 		session.disconnect();
 		channel.quit();
@@ -214,7 +222,10 @@ public class SFTP implements Closeable
 		checkArguments(from,to);
 		try
 		{
+			Log.d(SFTPProvider.TAG, String.format("Get server file %s to %s", from.getAbsolutePath(), to.getAbsolutePath()));
 			channel.get(from.getPath(),to.getPath());
+			long lastModified = lastModified(from);
+			to.setLastModified(lastModified);
 		}
 		catch(SftpException e)
 		{
