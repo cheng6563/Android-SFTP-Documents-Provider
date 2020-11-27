@@ -1,7 +1,7 @@
 # Modify
 - Some software uses Document Provider in the main thread to solve this problem in a very stupid way
 
-- Prevent the uploaded file from being read
+- Prevent the uploading file from being read
 
 - `Root.FLAG_SUPPORTS_IS_CHILD` flag is added, some software needs it
 
