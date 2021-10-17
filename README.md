@@ -1,5 +1,5 @@
 # Modify
-- Some software uses Document Provider in the main thread to solve this problem in a very stupid way
+- Some software uses Document Provider in the main thread to solve this problem in a very stupid way (like Titanium Backup)
 
 - Prevent the uploading file from being read
 
